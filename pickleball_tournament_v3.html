@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Pickleball Tournament v3</title>
+  <style>
+    body{font-family: Arial, sans-serif; margin:20px;}
+    h1{color:#2c3e50}
+    input, button, select {margin:4px; padding:6px;}
+    table{border-collapse:collapse; width:100%; margin-top:8px;}
+    th,td{border:1px solid #ccc; padding:6px; text-align:center;}
+    th{background:#f4f4f4;}
+    .section{margin-top:20px; padding:10px; border:1px solid #eee; border-radius:6px;}
+    .flex{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+    .small{font-size:0.9em; color:#666;}
+    .btn {cursor:pointer;}
+    .team-input {width:220px;}
+    .match-row {display:flex; gap:8px; align-items:center; margin-bottom:6px;}
+    .bracket {display:flex; gap:20px; overflow:auto;}
+    .round {min-width:220px;}
+    .winner {font-weight:bold; color:green;}
+  </style>
+</head>
+<body>
+  <h1>🏓 Pickleball Tournament Manager (v3)</h1>
+  <div class="section">
+    <h2>1) Tạo người chơi / Random</h2>
+    <div class="flex">
+      <label> Số người (>=2): <input id="numPlayers" type="number" min="2" value="8"></label>
+      <button onclick="randomPlayers()" class="btn">Random Người chơi</button>
+      <button onclick="clearAll()" class="btn">Xóa hết</button>
+    </div>
+    <div id="playersArea" class="section small"></div>
+    <div style="margin-top:8px;">
+      <button onclick="applyPlayersEdits()" class="btn">Cập nhật tên & Ghép đội (2 người/đội)</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>2) Đội</h2>
+    <div id="teamsArea" class="small"></div>
+    <div style="margin-top:8px;">
+      <button onclick="makeTeams()" class="btn">Tạo đội ngẫu nhiên từ danh sách</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>3) Chia bảng & Lịch vòng bảng</h2>
+    <div class="flex">
+      <label>Min đội/bảng: <input id="minPerGroup" type="number" min="3" max="5" value="3" style="width:60px"></label>
+      <label>Max đội/bảng: <input id="maxPerGroup" type="number" min="3" max="5" value="5" style="width:60px"></label>
+      <button onclick="generateGroups()" class="btn">Chia bảng tự động</button>
+      <button onclick="generateAll()" class="btn">Chia bảng + Sinh lịch vòng bảng</button>
+    </div>
+    <div id="groupsArea"></div>
+    <div id="groupMatchesArea"></div>
+  </div>
+
+  <div class="section">
+    <h2>4) Bảng xếp hạng (tự động sắp xếp)</h2>
+    <div id="rankingsArea"></div>
+    <div style="margin-top:8px;">
+      <button onclick="selectTop2AndBuildKO()" class="btn">Chọn 2 đội Nhất/Nhì mỗi bảng → Sinh vòng loại trực tiếp</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>5) Vòng loại trực tiếp → Chung kết</h2>
+    <div id="knockoutArea"></div>
+    <div id="championArea" style="margin-top:12px; font-size:1.1em;"></div>
+  </div>
+
+<script>
+// State
+let players = []; // list of player names
+let editedPlayers = []; // for input editing
+let teams = []; // teams as "A & B"
+let groups = []; // array of group arrays (teams)
+let groupMatches = {}; // groupMatches[groupIdx] = [{teamA, teamB, scoreA, scoreB}]
+let standings = {}; // standings[groupIdx] = {team: {pts, gf, ga, gd}}
+let knockout = []; // array of rounds, each round is array of matches {teamA,teamB,scoreA,scoreB,winner}
+
+// Utilities
+function $(id){return document.getElementById(id);}
+
+function clearAll(){
+  players = []; editedPlayers=[]; teams=[]; groups=[]; groupMatches={}; standings={}; knockout=[];
+  renderAll();
+}
+
+// 1) Random players
+function randomPlayers(){
+  const n = parseInt($('numPlayers').value) || 0;
+  if(n < 2) { alert('Nhập số người >= 2'); return; }
+  players = [];
+  for(let i=1;i<=n;i++) players.push('Player ' + i);
+  // create editable inputs
+  editedPlayers = [...players];
+  renderPlayersEditor();
+}
+
+function renderPlayersEditor(){
+  let html = '<p>Chỉnh sửa tên người chơi (sửa rồi bấm "Cập nhật tên & Ghép đội")</p>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+  editedPlayers.forEach((p,i) => {
+    html += `<div><input class="team-input" id="player_edit_${i}" value="${escapeHtml(p)}"></div>`;
+  });
+  html += '</div>';
+  $('playersArea').innerHTML = html;
+}
+
+function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function applyPlayersEdits(){
+  // read back inputs
+  editedPlayers = editedPlayers.map((_,i) => {
+    const v = $('player_edit_' + i).value.trim();
+    return v ? v : ('Player ' + (i+1));
+  });
+  players = [...editedPlayers];
+  renderPlayersEditor();
+  // auto create teams from current players
+  makeTeams();
+}
+
+// 2) make teams by pairing successive players (or shuffle then pair)
+function makeTeams(){
+  teams = [];
+  let shuffled = [...players].sort(() => Math.random() - 0.5);
+  for(let i=0;i<shuffled.length;i+=2){
+    if(i+1 < shuffled.length) teams.push(shuffled[i] + ' & ' + shuffled[i+1]);
+    else teams.push(shuffled[i] + ' & (bye)');
+  }
+  renderTeams();
+}
+
+function renderTeams(){
+  let html = '<ul>';
+  teams.forEach((t,i) => html += `<li>Team ${i+1}: ${escapeHtml(t)}</li>`);
+  html += '</ul>';
+  $('teamsArea').innerHTML = html;
+}
+
+// 3) group splitting: try to balance groups with sizes between min and max
+function generateGroups(){
+  groups = [];
+  groupMatches = {};
+  standings = {};
+  const nTeams = teams.length;
+  if(nTeams < 1){ alert('Chưa có đội. Tạo đội trước.'); return; }
+
+  const minPer = Math.max(2, parseInt($('minPerGroup').value));
+  const maxPer = Math.min(5, Math.max(minPer, parseInt($('maxPerGroup').value)));
+  if(minPer < 2 || maxPer < minPer){ alert('Thiết lập số đội/bảng không hợp lệ'); return; }
+
+  // determine number of groups: try from ceil(n/max) to floor(n/min) and select one with minimal imbalance
+  const candidates = [];
+  for(let g = Math.ceil(nTeams / maxPer); g <= Math.floor(nTeams / minPer); g++){
+    if(g <= 0) continue;
+    let base = Math.floor(nTeams / g);
+    let rem = nTeams % g;
+    const sizes = Array.from({length:g}, (_,i) => base + (i < rem ? 1 : 0));
+    // check sizes within [minPer,maxPer]
+    if(sizes.every(s => s>=minPer && s<=maxPer)) {
+      // compute imbalance metric (max-min)
+      candidates.push({g, sizes, diff: Math.max(...sizes) - Math.min(...sizes)});
+    }
+  }
+  if(candidates.length === 0){
+    // fallback: single group
+    groups = [ [...teams] ];
+  } else {
+    // choose candidate with minimal diff and minimal g
+    candidates.sort((a,b) => a.diff - b.diff || a.g - b.g);
+    const pick = candidates[0];
+    const g = pick.g;
+    // shuffle teams and distribute according to sizes
+    const shuffled = [...teams].sort(() => Math.random()-0.5);
+    let idx = 0;
+    for(let i=0;i<g;i++){
+      groups.push(shuffled.slice(idx, idx + pick.sizes[i]));
+      idx += pick.sizes[i];
+    }
+  }
+  // init matches and standings for each group
+  groups.forEach((grp,gi) => {
+    groupMatches[gi] = [];
+    standings[gi] = {};
+    for(const t of grp) standings[gi][t] = {pts:0, gf:0, ga:0, gd:0};
+    for(let i=0;i<grp.length;i++){
+      for(let j=i+1;j<grp.length;j++){
+        groupMatches[gi].push({teamA:grp[i], teamB:grp[j], scoreA:null, scoreB:null});
+      }
+    }
+  });
+
+  renderGroups();
+  renderGroupMatches();
+  renderRankings();
+}
+
+function generateAll(){
+  generateGroups();
+}
+
+// render groups
+function renderGroups(){
+  let html = '';
+  groups.forEach((g,gi) => {
+    html += `<div style="margin-top:8px;"><strong>Bảng ${String.fromCharCode(65+gi)} ( ${g.length} đội )</strong><ul>`;
+    g.forEach(t => html += `<li>${escapeHtml(t)}</li>`);
+    html += '</ul></div>';
+  });
+  $('groupsArea').innerHTML = html;
+}
+
+// render group matches with inputs
+function renderGroupMatches(){
+  let html = '';
+  for(const gi in groupMatches){
+    html += `<h3>Bảng ${String.fromCharCode(65+parseInt(gi))}</h3>`;
+    groupMatches[gi].forEach((m,mi) => {
+      html += `<div class="match-row">
+        <div style="width:300px">${escapeHtml(m.teamA)} vs ${escapeHtml(m.teamB)}</div>
+        <input id="g_${gi}_a_${mi}" placeholder="A" style="width:60px" value="${m.scoreA!=null?m.scoreA:''}">
+        <input id="g_${gi}_b_${mi}" placeholder="B" style="width:60px" value="${m.scoreB!=null?m.scoreB:''}">
+        <button onclick="saveGroupScore(${gi}, ${mi})">Lưu</button>
+      </div>`;
+    });
+  }
+  $('groupMatchesArea').innerHTML = html;
+}
+
+// save group score and recalc standings
+function saveGroupScore(gi, mi){
+  const aIn = $(`g_${gi}_a_${mi}`).value;
+  const bIn = $(`g_${gi}_b_${mi}`).value;
+  const a = aIn === '' ? null : parseInt(aIn);
+  const b = bIn === '' ? null : parseInt(bIn);
+  groupMatches[gi][mi].scoreA = a;
+  groupMatches[gi][mi].scoreB = b;
+  recalcStandingsForGroup(parseInt(gi));
+  renderRankings();
+}
+
+function recalcStandingsForGroup(gi){
+  // reset
+  const grp = groups[gi];
+  standings[gi] = {};
+  grp.forEach(t => standings[gi][t] = {pts:0, gf:0, ga:0, gd:0});
+  groupMatches[gi].forEach(m => {
+    if(m.scoreA == null || m.scoreB == null) return;
+    const a = m.scoreA, b = m.scoreB;
+    standings[gi][m.teamA].gf += a;
+    standings[gi][m.teamA].ga += b;
+    standings[gi][m.teamA].gd = standings[gi][m.teamA].gf - standings[gi][m.teamA].ga;
+    standings[gi][m.teamB].gf += b;
+    standings[gi][m.teamB].ga += a;
+    standings[gi][m.teamB].gd = standings[gi][m.teamB].gf - standings[gi][m.teamB].ga;
+    if(a > b){ standings[gi][m.teamA].pts += 1; }
+    else if(b > a){ standings[gi][m.teamB].pts += 1; }
+    // draw not counted (rules said win=1, loss=0)
+  });
+}
+
+// render rankings, sorted by pts desc, then gd desc, then gf desc
+function renderRankings(){
+  let html = '';
+  for(const gi in standings){
+    const table = standings[gi];
+    const rows = Object.keys(table).map(t => ({team:t, ...table[t]}));
+    rows.sort((r1,r2) => {
+      if(r2.pts !== r1.pts) return r2.pts - r1.pts;
+      if(r2.gd !== r1.gd) return r2.gd - r1.gd;
+      return r2.gf - r1.gf;
+    });
+    html += `<h3>Bảng ${String.fromCharCode(65+parseInt(gi))} - Bảng xếp hạng</h3>`;
+    html += `<table><thead><tr><th>Vị trí</th><th>Đội</th><th>Điểm</th><th>GF</th><th>GA</th><th>GD</th></tr></thead><tbody>`;
+    rows.forEach((r,idx) => {
+      html += `<tr ${idx===0? 'class="winner"':''}><td>${idx+1}</td><td>${escapeHtml(r.team)}</td><td>${r.pts}</td><td>${r.gf}</td><td>${r.ga}</td><td>${r.gd}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  $('rankingsArea').innerHTML = html;
+}
+
+// 4) select top2 and build knockout bracket
+function selectTop2AndBuildKO(){
+  const qualified = []; // array of {group:gi, pos:1/2, team}
+  for(const gi in standings){
+    const table = standings[gi];
+    const rows = Object.keys(table).map(t => ({team:t, ...table[t]}));
+    rows.sort((r1,r2) => {
+      if(r2.pts !== r1.pts) return r2.pts - r1.pts;
+      if(r2.gd !== r1.gd) return r2.gd - r1.gd;
+      return r2.gf - r1.gf;
+    });
+    if(rows[0]) qualified.push({group:parseInt(gi), pos:1, team:rows[0].team});
+    if(rows[1]) qualified.push({group:parseInt(gi), pos:2, team:rows[1].team});
+  }
+  if(qualified.length === 0){ alert('Chưa có đội lọt vào vòng trong'); return; }
+  // sort qualified by group to preserve A1,B1,A2,B2 ordering
+  qualified.sort((a,b) => a.group - b.group || a.pos - b.pos);
+  // build pairings: for each pair of groups (A,B),(C,D) -> A1 vs B2, B1 vs A2, C1 vs D2, D1 vs C2...
+  const byGroup = {};
+  qualified.forEach(q => {
+    if(!byGroup[q.group]) byGroup[q.group] = {};
+    byGroup[q.group][q.pos] = q.team;
+  });
+  const groupsCount = Object.keys(byGroup).length;
+  const groupIndices = Object.keys(byGroup).map(x=>parseInt(x)).sort((a,b)=>a-b);
+  const pairings = [];
+  for(let i=0;i<groupIndices.length; i+=2){
+    const gA = groupIndices[i];
+    const gB = groupIndices[i+1];
+    if(gB === undefined){
+      // odd group left: its top team gets bye to next round; second place may be paired with someone later
+      if(byGroup[gA] && byGroup[gA][1]) {
+        pairings.push({teamA: byGroup[gA][1], teamB: null}); // bye
+      }
+    } else {
+      const A1 = byGroup[gA] ? byGroup[gA][1] : null;
+      const A2 = byGroup[gA] ? byGroup[gA][2] : null;
+      const B1 = byGroup[gB] ? byGroup[gB][1] : null;
+      const B2 = byGroup[gB] ? byGroup[gB][2] : null;
+      if(A1 && B2) pairings.push({teamA:A1, teamB:B2});
+      if(B1 && A2) pairings.push({teamA:B1, teamB:A2});
+    }
+  }
+  // if more than 8 teams, pairings will produce initial round. We'll create knockout rounds array.
+  knockout = [];
+  knockout.push(pairings.map(p => ({teamA:p.teamA, teamB:p.teamB, scoreA:null, scoreB:null, winner:null})));
+  renderKnockout();
+}
+
+// render knockout rounds and inputs
+function renderKnockout(){
+  const area = $('knockoutArea');
+  if(!knockout || knockout.length === 0){ area.innerHTML = '<p>Chưa có vòng loại trực tiếp.</p>'; return; }
+  let html = '<div class="bracket">';
+  knockout.forEach((round, rIdx) => {
+    html += `<div class="round"><h4>Vòng ${rIdx+1}</h4>`;
+    round.forEach((m, mIdx) => {
+      const tA = m.teamA || '---';
+      const tB = m.teamB || '---';
+      html += `<div style="margin-bottom:8px;">${escapeHtml(tA)} <input id="ko_${rIdx}_${mIdx}_a" style="width:50px" value="${m.scoreA!=null?m.scoreA:''}"> :
+                 <input id="ko_${rIdx}_${mIdx}_b" style="width:50px" value="${m.scoreB!=null?m.scoreB:''}"> ${escapeHtml(tB)}
+                 <button onclick="saveKOScore(${rIdx}, ${mIdx})">Lưu</button>
+                 <span id="ko_w_${rIdx}_${mIdx}" class="small"></span>
+                 </div>`;
+    });
+    html += `</div>`;
+  });
+  html += '</div>';
+  area.innerHTML = html;
+  $('championArea').innerHTML = '';
+}
+
+function saveKOScore(rIdx, mIdx){
+  const aV = $(`ko_${rIdx}_${mIdx}_a`).value;
+  const bV = $(`ko_${rIdx}_${mIdx}_b`).value;
+  const a = aV === '' ? null : parseInt(aV);
+  const b = bV === '' ? null : parseInt(bV);
+  const match = knockout[rIdx][mIdx];
+  match.scoreA = a; match.scoreB = b;
+  if(a != null && b != null){
+    if(match.teamB == null){ // bye -> teamA advances if has name
+      match.winner = match.teamA;
+    } else if(a > b) match.winner = match.teamA;
+    else if(b > a) match.winner = match.teamB;
+    else match.winner = null; // tie -> require manual tiebreak (not auto)
+  }
+  // display winner for this match
+  $(`ko_w_${rIdx}_${mIdx}`).innerText = match.winner ? ('→ ' + match.winner) : '';
+  // if all matches in round have decided winners (or byes), build next round
+  const allDone = knockout[rIdx].every(m => m.winner != null);
+  if(allDone){
+    const winners = knockout[rIdx].map(m => m.winner).filter(Boolean);
+    if(winners.length == 1){
+      // champion found
+      $('championArea').innerHTML = `<div class="winner">🏆 Vô địch: ${escapeHtml(winners[0])}</div>`;
+      return;
+    }
+    // build next round pairings (pair sequentially). If odd, last one gets bye (paired with null)
+    const nextRound = [];
+    for(let i=0;i<winners.length;i+=2){
+      const A = winners[i];
+      const B = (i+1 < winners.length) ? winners[i+1] : null;
+      nextRound.push({teamA:A, teamB:B, scoreA:null, scoreB:null, winner:null});
+    }
+    knockout.push(nextRound);
+    renderKnockout();
+  }
+}
+
+// helper to programmatically get element by id
+function $(id){return document.getElementById(id);}
+
+// initial render
+renderAll();
+
+function renderAll(){
+  renderPlayersEditor();
+  renderTeams();
+  renderGroups();
+  renderGroupMatches();
+  renderRankings();
+  renderKnockout();
+}
+
+// convenience: generate example flow quickly
+function generateExample(nPlayers=12){
+  $('numPlayers').value = nPlayers;
+  randomPlayers();
+  applyPlayersEdits();
+  makeTeams();
+  generateAll();
+}
+
+</script>
+</body>
+</html>
